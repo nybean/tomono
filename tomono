@@ -53,17 +53,25 @@ esac
 empty_tree="$(git hash-object -t tree /dev/null)"
 
 # Note this is top-level in the script so it’s reading from the script’s stdin
-while IFS=$'\r'"$IFS" read -r repourl reponame repopath; do
+while IFS=$'\r'"$IFS" read -r repourl reponame repopath options; do
     if [[ -z "$repopath" ]]; then
         repopath="$reponame"
     fi
 
-    git remote add "$reponame" "$repourl"
+    git remote add "$reponame" "$repourl" 2>/dev/null || echo "warning: remote $reponame already exists"
     git config --add "remote.$reponame.fetch" "+refs/tags/*:refs/tags/$reponame/*"
     git config "remote.$reponame.tagOpt" --no-tags
     git fetch --atomic "$reponame"
     
+    read -a options <<< "$options"
+    if [[ $(echo ${options[@]} | fgrep -iw 'lfs') ]]; then
+        git lfs install
+        git lfs fetch --all
+    fi
     git branch -r --no-color --list "$reponame/*" --format "%(refname:lstrip=3)" | while read -r branch ; do
+        if [[ ! "$branch" =~ ${MONOREPO_BRANCHES:=} ]]; then
+            continue
+        fi
         if ! git show-ref --verify --quiet "refs/heads/$branch"; then
             tree="$(git commit-tree \
                 "$empty_tree" \
@@ -72,7 +80,6 @@ while IFS=$'\r'"$IFS" read -r repourl reponame repopath; do
         fi
         git symbolic-ref HEAD "refs/heads/$branch"
         git reset -q
-        
         git read-tree --prefix "$repopath" "refs/remotes/$reponame/$branch"
         tree="$(git write-tree)"
         commit="$(git commit-tree \
@@ -84,7 +91,11 @@ while IFS=$'\r'"$IFS" read -r repourl reponame repopath; do
     done
 done
 
-git checkout .
+git checkout . || {
+    git config --get lfs.repositoryformatversion >/dev/null && {
+        >&2 echo "repositories using LFS need to be marked in the config file"
+    }
+}
 
 # Copyright © 2020, 2022, 2023 Hraban Luyat
 # 
